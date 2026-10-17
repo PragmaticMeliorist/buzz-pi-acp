@@ -669,7 +669,68 @@ test('PiAcpSession: prompt stays open through retry runs until agent_settled', a
 
   proc.emit({ type: 'agent_settled' })
   const reason = await p
-  assert.equal(reason, 'end_turn')
+  assert.equal(reason.stopReason, 'end_turn')
+  assert.equal(reason.usage, undefined)
+})
+
+test('PiAcpSession: prompt result sums assistant usage and keeps provider totals', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const first = session.prompt('one')
+  proc.emit({ type: 'agent_start' })
+  proc.emit({
+    type: 'turn_end',
+    message: {
+      role: 'assistant',
+      usage: { input: 100, output: 20, cacheRead: 30, cacheWrite: 25, totalTokens: 175 }
+    }
+  })
+  proc.emit({
+    type: 'turn_end',
+    message: { role: 'user', usage: { input: 9, output: 9, cacheRead: 9, cacheWrite: 9, totalTokens: 9 } }
+  })
+  proc.emit({
+    type: 'turn_end',
+    message: { role: 'assistant', usage: { input: 50, output: 5, cacheRead: 0, cacheWrite: 0 } }
+  })
+  proc.emit({
+    type: 'turn_end',
+    message: {
+      role: 'assistant',
+      usage: { input: 4, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 9 }
+    }
+  })
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
+
+  const firstResult = await first
+  assert.equal(firstResult.stopReason, 'end_turn')
+  assert.deepEqual(firstResult.usage, {
+    inputTokens: 104,
+    outputTokens: 21,
+    totalTokens: 184,
+    cachedReadTokens: 30,
+    cachedWriteTokens: 25
+  })
+
+  const second = session.prompt('two')
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'turn_end' })
+  proc.emit({ type: 'agent_end' })
+  proc.emit({ type: 'agent_settled' })
+  const secondResult = await second
+  assert.equal(secondResult.stopReason, 'end_turn')
+  assert.equal(secondResult.usage, undefined)
 })
 
 test('PiAcpSession: does not re-emit startup info on first prompt after it was already sent', async () => {
@@ -710,7 +771,7 @@ test('PiAcpSession: does not re-emit startup info on first prompt after it was a
   proc.emit({ type: 'agent_settled' })
 
   const reason = await p
-  assert.equal(reason, 'end_turn')
+  assert.equal(reason.stopReason, 'end_turn')
 })
 
 test('PiAcpSession: cancel flips stopReason to cancelled', async () => {
@@ -735,7 +796,7 @@ test('PiAcpSession: cancel flips stopReason to cancelled', async () => {
   const reason = await p
 
   assert.equal(proc.abortCount, 1)
-  assert.equal(reason, 'cancelled')
+  assert.equal(reason.stopReason, 'cancelled')
 })
 
 test('PiAcpSession: queues concurrent prompt and starts it after agent_settled', async () => {
@@ -763,7 +824,7 @@ test('PiAcpSession: queues concurrent prompt and starts it after agent_settled',
   proc.emit({ type: 'agent_settled' })
 
   const r1 = await first
-  assert.equal(r1, 'end_turn')
+  assert.equal(r1.stopReason, 'end_turn')
 
   assert.equal(proc.prompts.length, 2)
   assert.equal(proc.prompts[1]!.message, 'two')
@@ -774,7 +835,7 @@ test('PiAcpSession: queues concurrent prompt and starts it after agent_settled',
   proc.emit({ type: 'agent_settled' })
 
   const r2 = await second
-  assert.equal(r2, 'end_turn')
+  assert.equal(r2.stopReason, 'end_turn')
 })
 
 test('PiAcpSession: cancel clears queued prompts', async () => {
@@ -804,8 +865,8 @@ test('PiAcpSession: cancel clears queued prompts', async () => {
   const r1 = await first
   const r2 = await second
 
-  assert.equal(r1, 'cancelled')
-  assert.equal(r2, 'cancelled')
+  assert.equal(r1.stopReason, 'cancelled')
+  assert.equal(r2.stopReason, 'cancelled')
 })
 
 test('PiAcpSession: expands /command before sending to pi', async () => {
@@ -838,7 +899,7 @@ test('PiAcpSession: expands /command before sending to pi', async () => {
   proc.emit({ type: 'agent_settled' })
 
   const reason = await p
-  assert.equal(reason, 'end_turn')
+  assert.equal(reason.stopReason, 'end_turn')
 })
 
 test('PiAcpSession: tags extension notify chunks with severity in _meta', async () => {

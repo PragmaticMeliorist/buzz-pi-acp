@@ -28,6 +28,12 @@ import {
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import type { SystemPrompt } from './system-prompt.js'
+import {
+  acpUsageFromAssistantUsages,
+  assistantUsageFromTurnEnd,
+  type AcpPromptUsage,
+  type PiAssistantUsage
+} from './turn-usage.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -41,15 +47,20 @@ type SessionCreateParams = {
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
 
+export type TurnResult = {
+  stopReason: StopReason
+  usage?: AcpPromptUsage
+}
+
 type PendingTurn = {
-  resolve: (reason: StopReason) => void
+  resolve: (result: TurnResult) => void
   reject: (err: unknown) => void
 }
 
 type QueuedTurn = {
   message: string
   images: unknown[]
-  resolve: (reason: StopReason) => void
+  resolve: (result: TurnResult) => void
   reject: (err: unknown) => void
 }
 
@@ -302,6 +313,7 @@ export class PiAcpSession {
   // next prompt. Settlement clears pi's queue and replays those steers in this turn.
   private turnSteers: Array<{ message: string; images: unknown[] }> = []
   private readonly inflightSteers = new Set<Promise<unknown>>()
+  private turnUsages: PiAssistantUsage[] = []
 
   get hasPendingTurn(): boolean {
     return this.pendingTurn !== null
@@ -371,11 +383,11 @@ export class PiAcpSession {
     })
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
+  async prompt(message: string, images: unknown[] = []): Promise<TurnResult> {
     // pi RPC mode disables slash command expansion, so we do it here.
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
 
-    const turnPromise = new Promise<StopReason>((resolve, reject) => {
+    const turnPromise = new Promise<TurnResult>((resolve, reject) => {
       const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
 
       // If a turn is already running, enqueue.
@@ -415,7 +427,7 @@ export class PiAcpSession {
 
     if (this.turnQueue.length) {
       const queued = this.turnQueue.splice(0, this.turnQueue.length)
-      for (const t of queued) t.resolve('cancelled')
+      for (const t of queued) t.resolve({ stopReason: 'cancelled' })
 
       this.emit({
         sessionUpdate: 'agent_message_chunk',
@@ -514,6 +526,7 @@ export class PiAcpSession {
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
     this.turnSteers = []
+    this.turnUsages = []
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -541,8 +554,8 @@ export class PiAcpSession {
         if (authErr) {
           this.pendingTurn?.reject(authErr)
         } else {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
-          this.pendingTurn?.resolve(reason)
+          const stopReason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
+          this.resolveTurn(stopReason)
         }
 
         this.pendingTurn = null
@@ -872,6 +885,10 @@ export class PiAcpSession {
       case 'turn_end': {
         // pi uses `turn_end` for sub-steps (e.g. tool_use) and will often start another turn.
         // Do NOT resolve the ACP `session/prompt` here; wait for `agent_settled`.
+        if (this.pendingTurn) {
+          const usage = assistantUsageFromTurnEnd(ev)
+          if (usage) this.turnUsages.push(usage)
+        }
         break
       }
 
@@ -884,6 +901,12 @@ export class PiAcpSession {
       default:
         break
     }
+  }
+
+  private resolveTurn(stopReason: StopReason): void {
+    const usage = acpUsageFromAssistantUsages(this.turnUsages)
+    this.turnUsages = []
+    this.pendingTurn?.resolve(usage ? { stopReason, usage } : { stopReason })
   }
 
   private async settleTurn(): Promise<void> {
@@ -900,8 +923,8 @@ export class PiAcpSession {
     // Ensure all updates derived from pi events are delivered before we resolve
     // the ACP `session/prompt` request.
     await this.flushEmits()
-    const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
-    this.pendingTurn?.resolve(reason)
+    const stopReason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
+    this.resolveTurn(stopReason)
     this.pendingTurn = null
 
     // Start next queued prompt, if any.

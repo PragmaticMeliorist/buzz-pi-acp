@@ -61,7 +61,7 @@ test('an active turn uses Pi steer without cancelling or starting another turn',
   proc.consumeSteers()
   proc.emit({ type: 'agent_end' })
   proc.emit({ type: 'agent_settled' })
-  assert.equal(await running, 'end_turn')
+  assert.equal((await running).stopReason, 'end_turn')
   assert.deepEqual(proc.prompts, [{ message: 'Original request', attachments: [] }])
   assert.equal(deliveries(proc, 'Change direction'), 1)
 })
@@ -104,7 +104,7 @@ test('a steer Pi accepts after its final drain replays once before the turn comp
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'agent_end' })
   proc.emit({ type: 'agent_settled' })
-  assert.equal(await running, 'end_turn')
+  assert.equal((await running).stopReason, 'end_turn')
   assert.deepEqual(order, ['ack', 'prompt'])
   assert.equal(deliveries(proc, 'Change direction'), 1)
 })
@@ -126,7 +126,7 @@ test('a queued steer still pending at settlement replays once', async () => {
   )
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'agent_settled' })
-  assert.equal(await running, 'end_turn')
+  assert.equal((await running).stopReason, 'end_turn')
   assert.equal(deliveries(proc, 'First'), 1)
   assert.equal(deliveries(proc, 'Second'), 1)
 })
@@ -148,7 +148,7 @@ test('a steer an input extension handles is never replayed', async () => {
   )
   proc.emit({ type: 'agent_start' })
   proc.emit({ type: 'agent_settled' })
-  assert.equal(await running, 'end_turn')
+  assert.equal((await running).stopReason, 'end_turn')
   assert.equal(deliveries(proc, 'A'), 1)
   assert.equal(deliveries(proc, 'B'), 0)
 })
@@ -170,7 +170,7 @@ test('steers outside the running Pi loop are rejected without cancelling the tur
   assert.equal(proc.abortCount, 0)
 
   clearQueue.resolve({ steering: [], followUp: [] })
-  assert.equal(await running, 'end_turn')
+  assert.equal((await running).stopReason, 'end_turn')
 })
 
 test('cancel drops acknowledged steers before aborting', async () => {
@@ -184,7 +184,7 @@ test('cancel drops acknowledged steers before aborting', async () => {
 
   proc.emit({ type: 'agent_end' })
   proc.emit({ type: 'agent_settled' })
-  assert.equal(await running, 'cancelled')
+  assert.equal((await running).stopReason, 'cancelled')
   assert.deepEqual(proc.prompts, [{ message: 'Original request', attachments: [] }])
   assert.equal(deliveries(proc, 'Change direction'), 0)
 })
@@ -218,7 +218,7 @@ test('Pi rejection does not acknowledge delivery', async () => {
   await assert.rejects(agent.extMethod('_session/steering', steeringParams), /steer rejected/)
   proc.emit({ type: 'agent_end' })
   proc.emit({ type: 'agent_settled' })
-  assert.equal(await running, 'end_turn')
+  assert.equal((await running).stopReason, 'end_turn')
   assert.deepEqual(proc.calls, [])
 })
 
